@@ -1,9 +1,9 @@
 sandfix
 =======
 
-sandfix fixes a sandbox created on another machine by adjusting the global paths and the package dependencies in the sandbox's package database. It has only very basic dependencies.
+sandfix fixes a cabal sandbox created on another machine by adjusting the global paths and the package dependencies in the sandbox's package database. It has only very basic dependencies, and assumes a ghc installation.
 
-There are a couple of requirements your machine still needs to satisfy for the sandbox to work:
+There are a couple of requirements your machine needs to satisfy for the sandbox to work:
 
 * You should have the same version of ghc and the same platform as the machine the sandbox was created on.
 
