@@ -1,8 +1,9 @@
 import Control.Applicative ((<$>))
-import Control.Monad (filterM, forM, mplus, when, forM_)
-import Data.List (isSuffixOf)
+import Control.Monad (filterM, forM, mplus, when, unless, forM_)
+import Data.List (isSuffixOf, intercalate)
 import qualified Data.Map as Map
 import Data.Maybe (isNothing, listToMaybe, maybeToList)
+import Data.Either (lefts, rights)
 import Data.Monoid
 import qualified Data.Set as Set
 import Distribution.InstalledPackageInfo as I
@@ -38,20 +39,25 @@ packageIdFromInstalledPackageId (InstalledPackageId str) = case simpleParse $ ta
   Nothing -> Left $ "Failed to parse installed package id " ++ str
   Just pid -> return pid
 
-fixPackageIndex :: PackageIndex -> RPT -> PackageIndex -> Fix PackageIndex
+fixPackageIndex :: PackageIndex -> RPT -> PackageIndex -> Fix ([PackageId], PackageIndex)
 fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
-  = fromList <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
+  = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
   where
+    fromPackageIdsPackageInfoPairs = \(brokenPkgIds, infos) -> (concat brokenPkgIds, fromList infos)
+
     fixInstalledPackage info
       = do
       -- 1. Fix dependencies
-      fixedDependencies <- forM (I.depends info) $ \ipkgid -> do
+      dependencies <- forM (I.depends info) $ \ipkgid -> do
         pkgid <- packageIdFromInstalledPackageId ipkgid
         case lookupInstalledPackageId brokenPackageIndex ipkgid `mplus`
              listToMaybe (lookupSourcePackageId globalPkgIndex pkgid)
           of
-          Just fInfo -> return $ installedPackageId fInfo
-          Nothing -> Left $ "Could not find package " ++ display pkgid ++ " in either the sandbox or global DB. As a last resort try cabal installing it explicitly(this specific version) into the global DB with --global"
+          Just fInfo -> return . Right $ installedPackageId fInfo
+          Nothing -> return . Left $ pkgid
+
+      let fixedDependencies = rights dependencies
+          brokenDependencies = lefts dependencies
 
       -- 2. Fix the global paths
       let 
@@ -68,15 +74,17 @@ fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
       let fixedFrameworkDirs = findFirstOrRoot <$> frameworkDirs info
           fixedHaddockIfaces = findFirstOrRoot <$> haddockInterfaces info
           fixedHaddockHTMLs =  findFirstOrRoot <$> haddockHTMLs info
-      return info
-        { I.depends = fixedDependencies
-        , importDirs = fixedImportDirs
-        , libraryDirs = fixedLibDirs
-        , includeDirs = fixedIncludeDirs
-        , frameworkDirs = fixedFrameworkDirs
-        , haddockInterfaces = fixedHaddockIfaces
-        , haddockHTMLs = fixedHaddockHTMLs
-        }
+      return
+        (brokenDependencies,
+         info
+           { I.depends = fixedDependencies
+           , importDirs = fixedImportDirs
+           , libraryDirs = fixedLibDirs
+           , includeDirs = fixedIncludeDirs
+           , frameworkDirs = fixedFrameworkDirs
+           , haddockInterfaces = fixedHaddockIfaces
+           , haddockHTMLs = fixedHaddockHTMLs
+           })
 
 main :: IO ()
 main = do
@@ -103,9 +111,15 @@ main = do
   putStr "Fixing sandbox package DB... "
   case mapM (fixPackageIndex globalPackageDB sandboxRPT) brokenPackageDBs of
     Left err -> hPutStrLn stderr err >> exitFailure
-    Right fixedPackageDBs -> do
+    Right brokenPkgIdsFixedPackageDBPairs -> do
+      let (brokenPkgIdss, fixedPackageDBs) = unzip brokenPkgIdsFixedPackageDBPairs
+          brokenPkgIds = Set.toList . Set.fromList $ concat brokenPkgIdss
+      unless (null brokenPkgIds) $ do
+        let errorMsg =
+              "Could not find package(s) " ++ intercalate ", " (display <$> brokenPkgIds) ++ " in either the sandbox or global DB. As a last resort try cabal installing them explicitly(these specific versions) into the global DB with --global"
+        hPutStrLn stderr errorMsg >> exitFailure
       putStrLn "done"
-      putStr "Overwriting broken package DB... "
+      putStr "Overwriting broken package DB(s)... "
       forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> forM_ (allPackages db) $ \info -> do
         let filename = path <> "/" <> display (installedPackageId info) <> ".conf"
         writeFile filename $ showInstalledPackageInfo info
