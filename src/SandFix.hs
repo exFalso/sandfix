@@ -27,7 +27,6 @@ printUsage = do
   prog <- getProgName
   hPutStrLn stderr $ "Usage: " ++ prog ++ " SANDBOX_PATH"
 
-getReadPackageDB :: IO (PackageDB -> IO (PackageIndex I.InstalledPackageInfo))
 getReadPackageDB = do
   progConfig <- configureAllKnownPrograms _VERBOSITY $ addKnownProgram ghcProgram defaultProgramConfiguration
   return $ \pkgdb -> getPackageDBContents _VERBOSITY pkgdb progConfig
@@ -39,7 +38,6 @@ packageIdFromInstalledPackageId (InstalledPackageId str) = case simpleParse $ ta
   Nothing -> Left $ "Failed to parse installed package id " ++ str
   Just pid -> return pid
 
-fixPackageIndex :: PackageIndex I.InstalledPackageInfo -> RPT -> PackageIndex I.InstalledPackageInfo -> Fix ([PackageId], PackageIndex I.InstalledPackageInfo)
 fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
   = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
   where
@@ -121,7 +119,7 @@ main = do
       putStrLn "done"
       putStr "Overwriting broken package DB(s)... "
       forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> forM_ (allPackages db) $ \info -> do
-        let filename = path <> "/" <> display (installedPackageId info) <> ".conf"
+        let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
         writeFile filename $ I.showInstalledPackageInfo info
       putStrLn "done"
       putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
