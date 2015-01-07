@@ -6,7 +6,7 @@ import Data.Maybe (isNothing, listToMaybe, maybeToList)
 import Data.Either (lefts, rights)
 import Data.Monoid
 import qualified Data.Set as Set
-import Distribution.InstalledPackageInfo as I
+import qualified Distribution.InstalledPackageInfo as I
 import Distribution.Package
 import Distribution.Simple.Compiler
 import Distribution.Simple.GHC
@@ -27,7 +27,7 @@ printUsage = do
   prog <- getProgName
   hPutStrLn stderr $ "Usage: " ++ prog ++ " SANDBOX_PATH"
 
-getReadPackageDB :: IO (PackageDB -> IO PackageIndex)
+getReadPackageDB :: IO (PackageDB -> IO (PackageIndex I.InstalledPackageInfo))
 getReadPackageDB = do
   progConfig <- configureAllKnownPrograms _VERBOSITY $ addKnownProgram ghcProgram defaultProgramConfiguration
   return $ \pkgdb -> getPackageDBContents _VERBOSITY pkgdb progConfig
@@ -39,7 +39,7 @@ packageIdFromInstalledPackageId (InstalledPackageId str) = case simpleParse $ ta
   Nothing -> Left $ "Failed to parse installed package id " ++ str
   Just pid -> return pid
 
-fixPackageIndex :: PackageIndex -> RPT -> PackageIndex -> Fix ([PackageId], PackageIndex)
+fixPackageIndex :: PackageIndex I.InstalledPackageInfo -> RPT -> PackageIndex I.InstalledPackageInfo -> Fix ([PackageId], PackageIndex I.InstalledPackageInfo)
 fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
   = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
   where
@@ -53,7 +53,7 @@ fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
         case lookupInstalledPackageId brokenPackageIndex ipkgid `mplus`
              listToMaybe (lookupSourcePackageId globalPkgIndex pkgid)
           of
-          Just fInfo -> return . Right $ installedPackageId fInfo
+          Just fInfo -> return . Right $ I.installedPackageId fInfo
           Nothing -> return . Left $ pkgid
 
       let fixedDependencies = rights dependencies
@@ -68,22 +68,22 @@ fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
         findFirstOrRoot path = case findPartialPathMatches path sandboxRPT of
           [] -> "/"
           (a : _) -> a
-      fixedImportDirs <- mapM findOneOrFail $ importDirs info
-      fixedLibDirs <- mapM findOneOrFail $ libraryDirs info
-      fixedIncludeDirs <- mapM findOneOrFail $ includeDirs info
-      let fixedFrameworkDirs = findFirstOrRoot <$> frameworkDirs info
-          fixedHaddockIfaces = findFirstOrRoot <$> haddockInterfaces info
-          fixedHaddockHTMLs =  findFirstOrRoot <$> haddockHTMLs info
+      fixedImportDirs <- mapM findOneOrFail $ I.importDirs info
+      fixedLibDirs <- mapM findOneOrFail $ I.libraryDirs info
+      fixedIncludeDirs <- mapM findOneOrFail $ I.includeDirs info
+      let fixedFrameworkDirs = findFirstOrRoot <$> I.frameworkDirs info
+          fixedHaddockIfaces = findFirstOrRoot <$> I.haddockInterfaces info
+          fixedHaddockHTMLs =  findFirstOrRoot <$> I.haddockHTMLs info
       return
         (brokenDependencies,
          info
            { I.depends = fixedDependencies
-           , importDirs = fixedImportDirs
-           , libraryDirs = fixedLibDirs
-           , includeDirs = fixedIncludeDirs
-           , frameworkDirs = fixedFrameworkDirs
-           , haddockInterfaces = fixedHaddockIfaces
-           , haddockHTMLs = fixedHaddockHTMLs
+           , I.importDirs = fixedImportDirs
+           , I.libraryDirs = fixedLibDirs
+           , I.includeDirs = fixedIncludeDirs
+           , I.frameworkDirs = fixedFrameworkDirs
+           , I.haddockInterfaces = fixedHaddockIfaces
+           , I.haddockHTMLs = fixedHaddockHTMLs
            })
 
 main :: IO ()
@@ -122,7 +122,7 @@ main = do
       putStr "Overwriting broken package DB(s)... "
       forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> forM_ (allPackages db) $ \info -> do
         let filename = path <> "/" <> display (installedPackageId info) <> ".conf"
-        writeFile filename $ showInstalledPackageInfo info
+        writeFile filename $ I.showInstalledPackageInfo info
       putStrLn "done"
       putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
 
