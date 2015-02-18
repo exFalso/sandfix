@@ -25,7 +25,7 @@ _VERBOSITY = normal
 printUsage :: IO ()
 printUsage = do
   prog <- getProgName
-  hPutStrLn stderr $ "Usage: " ++ prog ++ " SANDBOX_PATH"
+  hPutStrLn stderr $ "Usage: " ++ prog ++ " SANDBOX_PATH or " ++ prog ++ " SANDBOX_PATH PKGDIR_NAME"
 
 getReadPackageDB = do
   progConfig <- configureAllKnownPrograms _VERBOSITY $ addKnownProgram ghcProgram defaultProgramConfiguration
@@ -84,14 +84,21 @@ fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
            , I.haddockHTMLs = fixedHaddockHTMLs
            })
 
+findDBs :: FilePath -> Maybe String -> IO [FilePath]
+findDBs sandboxPath pkgDir =
+  case pkgDir of
+   Nothing -> map (\p -> sandboxPath <> "/" <> p) . filter (isSuffixOf ".conf.d") <$> getDirectoryContents sandboxPath
+   Just pkgDir' -> return [sandboxPath <> "/" <> pkgDir']
+
 main :: IO ()
 main = do
   argv <- getArgs
-  when (length argv /= 1) $ do
+  when (length argv == 0 || length argv >= 3) $ do
     printUsage
     exitFailure
   let sandboxPath = head argv
-  brokenDBPaths <- map (\p -> sandboxPath <> "/" <> p) . filter (isSuffixOf ".conf.d") <$> getDirectoryContents sandboxPath
+      pkgDir = if length argv == 2 then Just $ argv !! 1 else Nothing
+  brokenDBPaths <- findDBs sandboxPath pkgDir
   when (null brokenDBPaths) $ do
     hPutStrLn stderr $ "Unable to find sandbox package database in " ++ sandboxPath
     exitFailure

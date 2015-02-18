@@ -18,9 +18,16 @@ This can be a problem for example if the sandbox is created on a box with the Ha
 Usage
 =====
 
+For _cabal sandboxes_:
 ```
 $ runhaskell src/SandFix.hs PATH_TO_SANDBOX
 ```
+
+or with custom package databases:
+```
+$ runhaskell src/SandFix.hs PATH_TO_SANDBOX PKGDIR_NAME
+```
+where `PKGDIR_NAME` is the relative path of the package database under `PATH_SANDBOX`.
 
 Troubleshooting
 =====
