@@ -20,14 +20,16 @@ Usage
 
 For _cabal sandboxes_:
 ```
-$ runhaskell src/SandFix.hs PATH_TO_SANDBOX
+$ runhaskell src/SandFix.hs PATH_TO_SANDBOX [--package-db=...]
 ```
 
 or with custom package databases:
 ```
-$ runhaskell src/SandFix.hs PATH_TO_SANDBOX PKGDIR_NAME
+$ runhaskell src/SandFix.hs PATH_TO_SANDBOX PKGDIR_NAME [--package-db=...]
 ```
 where `PKGDIR_NAME` is the relative path of the package database under `PATH_SANDBOX`.
+
+Package database stack can be specified in the same way as for `cabal`. The default is equivalent to `--package-db=global`.
 
 Troubleshooting
 =====
