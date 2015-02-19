@@ -1,6 +1,6 @@
 import Control.Applicative ((<$>))
 import Control.Monad (filterM, forM, mplus, when, unless, forM_)
-import Data.List (isSuffixOf, intercalate)
+import Data.List (isSuffixOf, isPrefixOf, intercalate)
 import qualified Data.Map as Map
 import Data.Maybe (isNothing, listToMaybe, maybeToList)
 import Data.Either (lefts, rights)
@@ -26,6 +26,7 @@ printUsage :: IO ()
 printUsage = do
   prog <- getProgName
   hPutStrLn stderr $ "Usage: " ++ prog ++ " SANDBOX_PATH or " ++ prog ++ " SANDBOX_PATH PKGDIR_NAME"
+  hPutStrLn stderr "Optional package stack: --package-db=global --package-db=user --package-db=/path/"
 
 getReadPackageDB = do
   progConfig <- configureAllKnownPrograms _VERBOSITY $ addKnownProgram ghcProgram defaultProgramConfiguration
@@ -33,12 +34,11 @@ getReadPackageDB = do
 
 type Fix = Either String
 
-packageIdFromInstalledPackageId :: InstalledPackageId -> Fix PackageId
 packageIdFromInstalledPackageId (InstalledPackageId str) = case simpleParse $ take (length str - 33) str of
   Nothing -> Left $ "Failed to parse installed package id " ++ str
   Just pid -> return pid
 
-fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
+fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
   = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
   where
     fromPackageIdsPackageInfoPairs = \(brokenPkgIds, infos) -> (concat brokenPkgIds, fromList infos)
@@ -49,7 +49,7 @@ fixPackageIndex globalPkgIndex sandboxRPT brokenPackageIndex
       dependencies <- forM (I.depends info) $ \ipkgid -> do
         pkgid <- packageIdFromInstalledPackageId ipkgid
         case lookupInstalledPackageId brokenPackageIndex ipkgid `mplus`
-             listToMaybe (lookupSourcePackageId globalPkgIndex pkgid)
+             (listToMaybe $ concatMap ((flip lookupSourcePackageId) pkgid) globalPkgIndices)
           of
           Just fInfo -> return . Right $ I.installedPackageId fInfo
           Nothing -> return . Left $ pkgid
@@ -90,9 +90,30 @@ findDBs sandboxPath pkgDir =
    Nothing -> map (\p -> sandboxPath <> "/" <> p) . filter (isSuffixOf ".conf.d") <$> getDirectoryContents sandboxPath
    Just pkgDir' -> return [sandboxPath <> "/" <> pkgDir']
 
+mainArgs :: [String] -> [String]
+mainArgs = filter (not . isPrefixOf "--")
+
+pkgDbStack :: [String] -> PackageDBStack
+pkgDbStack args = map (parseDb . argValue) (pkgArgs args)
+ where
+   argPrefix = "--package-db="
+   argValue = drop (length argPrefix)
+   parseDb "global" = GlobalPackageDB
+   parseDb "user" = UserPackageDB
+   parseDb p = SpecificPackageDB p
+   pkgArgs = filter (isPrefixOf argPrefix)
+
+pkgDbStackWithDefault :: [String] -> PackageDBStack
+pkgDbStackWithDefault args =
+  case pkgDbStack args of
+   [] -> [GlobalPackageDB] -- default
+   pkgs -> pkgs
+
 main :: IO ()
 main = do
-  argv <- getArgs
+  argv <- mainArgs <$> getArgs
+  packageDbStack <- pkgDbStackWithDefault <$> getArgs
+
   when (length argv == 0 || length argv >= 3) $ do
     printUsage
     exitFailure
@@ -102,19 +123,20 @@ main = do
   when (null brokenDBPaths) $ do
     hPutStrLn stderr $ "Unable to find sandbox package database in " ++ sandboxPath
     exitFailure
+
   -- print comp
   readPkgDB <- getReadPackageDB
   putStr "Reading sandbox Package DB... "
   brokenPackageDBs <- mapM (readPkgDB . SpecificPackageDB) brokenDBPaths
   putStrLn "done"
   putStr "Reading global Package DB... "
-  globalPackageDB <- readPkgDB GlobalPackageDB
+  globalPackageDBs <- mapM readPkgDB packageDbStack
   putStrLn "done"
   putStr "Constructing path tree of sandbox... "
   sandboxRPT <- fromDirRecursively sandboxPath
   putStrLn "done"
   putStr "Fixing sandbox package DB... "
-  case mapM (fixPackageIndex globalPackageDB sandboxRPT) brokenPackageDBs of
+  case mapM (fixPackageIndex globalPackageDBs sandboxRPT) brokenPackageDBs of
     Left err -> hPutStrLn stderr err >> exitFailure
     Right brokenPkgIdsFixedPackageDBPairs -> do
       let (brokenPkgIdss, fixedPackageDBs) = unzip brokenPkgIdsFixedPackageDBPairs
