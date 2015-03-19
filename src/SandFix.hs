@@ -1,8 +1,8 @@
-import Control.Applicative ((<$>))
-import Control.Monad (filterM, forM, mplus, when, unless, forM_)
+import Control.Applicative ((<$>), (<*))
+import Control.Monad (forM, mplus, when, unless, forM_)
 import Data.List (isSuffixOf, isPrefixOf, intercalate)
 import qualified Data.Map as Map
-import Data.Maybe (isNothing, listToMaybe, maybeToList)
+import Data.Maybe (listToMaybe, catMaybes)
 import Data.Either (lefts, rights)
 import Data.Monoid
 import qualified Data.Set as Set
@@ -14,10 +14,12 @@ import Distribution.Simple.PackageIndex
 import Distribution.Simple.Program
 import Distribution.Text
 import Distribution.Verbosity
+import System.FilePath
 import System.Directory
 import System.Environment
 import System.Exit
 import System.IO
+import Data.Time
 
 _VERBOSITY :: Verbosity
 _VERBOSITY = normal
@@ -31,8 +33,6 @@ printUsage = do
 getReadPackageDB = do
   progConfig <- configureAllKnownPrograms _VERBOSITY $ addKnownProgram ghcProgram defaultProgramConfiguration
   return $ \pkgdb -> getPackageDBContents _VERBOSITY pkgdb progConfig
-
-type Fix = Either String
 
 packageIdFromInstalledPackageId (InstalledPackageId str) = case simpleParse $ take (length str - 33) str of
   Nothing -> Left $ "Failed to parse installed package id " ++ str
@@ -109,6 +109,13 @@ pkgDbStackWithDefault args =
    [] -> [GlobalPackageDB] -- default
    pkgs -> pkgs
 
+timed :: (IO () -> IO a) -> IO a
+timed io = do
+  a <- getCurrentTime
+  io $ do
+    b <- getCurrentTime
+    putStrLn $ show (diffUTCTime b a)
+
 main :: IO ()
 main = do
   argv <- mainArgs <$> getArgs
@@ -127,91 +134,85 @@ main = do
   -- print comp
   readPkgDB <- getReadPackageDB
   putStr "Reading sandbox Package DB... "
-  brokenPackageDBs <- mapM (readPkgDB . SpecificPackageDB) brokenDBPaths
+  brokenPackageDBs <- timed $ \till -> mapM (readPkgDB . SpecificPackageDB) brokenDBPaths <* till
   putStrLn "done"
   putStr "Reading global Package DB... "
-  globalPackageDBs <- mapM readPkgDB packageDbStack
+  globalPackageDBs <- timed $ \till -> mapM readPkgDB packageDbStack <* till
   putStrLn "done"
   putStr "Constructing path tree of sandbox... "
-  sandboxRPT <- fromDirRecursively sandboxPath
+  sandboxRPT <- timed $ \till -> fromDirRecursively sandboxPath <* till
   putStrLn "done"
   putStr "Fixing sandbox package DB... "
-  case mapM (fixPackageIndex globalPackageDBs sandboxRPT) brokenPackageDBs of
-    Left err -> hPutStrLn stderr err >> exitFailure
-    Right brokenPkgIdsFixedPackageDBPairs -> do
-      let (brokenPkgIdss, fixedPackageDBs) = unzip brokenPkgIdsFixedPackageDBPairs
-          brokenPkgIds = Set.toList . Set.fromList $ concat brokenPkgIdss
-      unless (null brokenPkgIds) $ do
-        let errorMsg =
-              "Could not find package(s) " ++ intercalate ", " (display <$> brokenPkgIds) ++ " in either the sandbox or global DB. As a last resort try cabal installing them explicitly(these specific versions) into the global DB with --global"
-        hPutStrLn stderr errorMsg >> exitFailure
-      putStrLn "done"
-      putStr "Overwriting broken package DB(s)... "
-      forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> forM_ (allPackages db) $ \info -> do
-        let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
-        writeFile filename $ I.showInstalledPackageInfo info
-      putStrLn "done"
-      putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
+  timed $ \till ->
+    case mapM (fixPackageIndex globalPackageDBs sandboxRPT) brokenPackageDBs of
+      Left err -> hPutStrLn stderr err >> exitFailure
+      Right brokenPkgIdsFixedPackageDBPairs -> do
+        let (brokenPkgIdss, fixedPackageDBs) = unzip brokenPkgIdsFixedPackageDBPairs
+            brokenPkgIds = Set.toList . Set.fromList $ concat brokenPkgIdss
+        unless (null brokenPkgIds) $ do
+          let errorMsg =
+                "Could not find package(s) " ++ intercalate ", " (display <$> brokenPkgIds) ++ " in either the sandbox or global DB. As a last resort try cabal installing them explicitly(these specific versions) into the global DB with --global"
+          hPutStrLn stderr errorMsg >> exitFailure
+        till
+        putStrLn "done"
+        putStr "Overwriting broken package DB(s)... "
+        timed $ \till' -> forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> do
+          forM_ (allPackages db) $ \info -> do
+            let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
+            writeFile filename $ I.showInstalledPackageInfo info
+          till'
+        putStrLn "done"
+        putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
 
--- Reverse Path Tree
-data RPT
-  = RPT
-    { rptPath :: Maybe FilePath
-    , rptChildren :: Map.Map String RPT
+newtype Pt
+  = Pt
+    { ptChildren :: Map.Map String Pt
     }
-  deriving Show
+  deriving (Show)
+newtype TopPt
+  = TopPt (Map.Map String [(FilePath, Pt)])
+  deriving (Show)
 
-instance Monoid RPT where
-  mempty = RPT Nothing Map.empty
-  RPT p0 cs0 `mappend` RPT p1 cs1 = RPT (p0 <> p1) (Map.unionWith (<>) cs0 cs1)
-
-insertFilePath :: FilePath -> RPT -> RPT
-insertFilePath filepath = insertFilePath' (reverseSplitFilePath filepath) filepath
+findPartialPathMatches :: FilePath -> TopPt -> [FilePath]
+findPartialPathMatches path (TopPt m) = go (splitDirectories path)
   where
-    insertFilePath' [] path rpt
-      = rpt { rptPath = Just path }
-    insertFilePath' (a : as) path rpt
-      = rpt { rptChildren = Map.insertWith (<>) a (fromParts as path) $ rptChildren rpt }
+    go [] = []
+    go (a : as)
+      | Just pts <- Map.lookup a m
+        = let
+            match (p, pt)
+              | doesMatch as pt = Just $ joinPath (p : a : as)
+              | otherwise = Nothing
+          in case catMaybes (match <$> pts) of
+            [] -> go as
+            r -> r
+      | otherwise = go as
 
-    fromParts [] path = mempty { rptPath = Just path }
-    fromParts (a : as) path = mempty { rptChildren = Map.singleton a $ fromParts as path }
+doesMatch :: [FilePath] -> Pt -> Bool
+doesMatch [] _ = True
+doesMatch (a : as) pt
+  | Just ch <- Map.lookup a (ptChildren pt) = doesMatch as ch
+  | otherwise = False
 
-fromFilePaths :: [FilePath] -> RPT
-fromFilePaths = foldr insertFilePath mempty
-
-fromDirRecursively :: FilePath -> IO RPT
-fromDirRecursively = fromDirRecursively' Set.empty
+fromDirRecursively :: FilePath -> IO TopPt
+fromDirRecursively p = topPtFromPt <$> fromDirRecursively' p
   where
-    fromDirRecursively' visited somePath = fromDirRecursively'' visited =<< canonicalizePath somePath
-    fromDirRecursively'' visited path
-      | path `Set.member` visited = return mempty
-      | otherwise = do
-        let isSub "." = False
-            isSub ".." = False
-            isSub _ = True
-        allSubs <- map (\p -> path <> "/" <> p) . filter isSub <$> getDirectoryContents path
-        subDirs <- filterM doesDirectoryExist allSubs
-        subRPT <- mconcat <$> mapM (fromDirRecursively' $ Set.insert path visited) subDirs
-        return $ fromFilePaths allSubs <> subRPT
+    fromDirRecursively' somePath = fromDirRecursively'' =<< canonicalizePath somePath
+    fromDirRecursively'' path = do
+      let isSub "." = False
+          isSub ".." = False
+          isSub _ = True
+      allSubs <- filter isSub <$> getDirectoryContents path
+      pts <- forM allSubs $ \sub -> do
+        let fullSub = path </> sub
+        doesDirectoryExist fullSub >>= \b ->
+          if b
+          then ((,) (sub)) <$> fromDirRecursively'' fullSub
+          else return (sub, Pt Map.empty)
+      return $ Pt (Map.fromList pts)
 
-reverseSplitFilePath :: FilePath -> [String]
-reverseSplitFilePath filepath = reverseSplitFilePath' filepath []
-  where
-    reverseSplitFilePath' "" ps = ps
-    reverseSplitFilePath' path ps = case span (/= '/') path of
-      ("", '/' : rest) -> reverseSplitFilePath' rest ps
-      (p, rest) -> reverseSplitFilePath' rest (p : ps)
-
-findPartialPathMatches :: FilePath -> RPT -> [FilePath]
-findPartialPathMatches filepath r
-  | (p : _) <- parts, isNothing . Map.lookup p $ rptChildren r = []
-  | otherwise = findPartialPathMatches' parts r
-  where
-    parts = reverseSplitFilePath filepath
-
-    findPartialPathMatches' [] rpt = collectPaths rpt
-    findPartialPathMatches' (a : as) rpt
-      | Just rpt' <- Map.lookup a (rptChildren rpt) = findPartialPathMatches' as rpt'
-      | otherwise                                  = collectPaths rpt
-
-    collectPaths rpt = maybeToList (rptPath rpt) ++ (collectPaths =<< Map.elems (rptChildren rpt))
+    topPtFromPt = TopPt . topPtFromPt' Map.empty p
+    topPtFromPt' m p' (Pt children) = foldr descend (foldr ins m (Map.toList children)) (Map.toList children)
+      where
+        ins (sub, pt) = Map.alter (Just . maybe [(p', pt)] ((p', pt) :)) sub
+        descend (sub, pt) m' = topPtFromPt' m' (p' </> sub) pt
