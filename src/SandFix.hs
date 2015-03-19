@@ -1,4 +1,4 @@
-import Control.Applicative ((<$>), (<*))
+import Control.Applicative ((<$>))
 import Control.Monad (forM, mplus, when, unless, forM_)
 import Data.List (isSuffixOf, isPrefixOf, intercalate)
 import qualified Data.Map as Map
@@ -19,7 +19,6 @@ import System.Directory
 import System.Environment
 import System.Exit
 import System.IO
-import Data.Time
 
 _VERBOSITY :: Verbosity
 _VERBOSITY = normal
@@ -109,13 +108,6 @@ pkgDbStackWithDefault args =
    [] -> [GlobalPackageDB] -- default
    pkgs -> pkgs
 
-timed :: (IO () -> IO a) -> IO a
-timed io = do
-  a <- getCurrentTime
-  io $ do
-    b <- getCurrentTime
-    putStrLn $ show (diffUTCTime b a)
-
 main :: IO ()
 main = do
   argv <- mainArgs <$> getArgs
@@ -134,35 +126,32 @@ main = do
   -- print comp
   readPkgDB <- getReadPackageDB
   putStr "Reading sandbox Package DB... "
-  brokenPackageDBs <- timed $ \till -> mapM (readPkgDB . SpecificPackageDB) brokenDBPaths <* till
+  brokenPackageDBs <- mapM (readPkgDB . SpecificPackageDB) brokenDBPaths
   putStrLn "done"
   putStr "Reading global Package DB... "
-  globalPackageDBs <- timed $ \till -> mapM readPkgDB packageDbStack <* till
+  globalPackageDBs <- mapM readPkgDB packageDbStack
   putStrLn "done"
   putStr "Constructing path tree of sandbox... "
-  sandboxRPT <- timed $ \till -> fromDirRecursively sandboxPath <* till
+  sandboxRPT <- fromDirRecursively sandboxPath
   putStrLn "done"
   putStr "Fixing sandbox package DB... "
-  timed $ \till ->
-    case mapM (fixPackageIndex globalPackageDBs sandboxRPT) brokenPackageDBs of
-      Left err -> hPutStrLn stderr err >> exitFailure
-      Right brokenPkgIdsFixedPackageDBPairs -> do
-        let (brokenPkgIdss, fixedPackageDBs) = unzip brokenPkgIdsFixedPackageDBPairs
-            brokenPkgIds = Set.toList . Set.fromList $ concat brokenPkgIdss
-        unless (null brokenPkgIds) $ do
-          let errorMsg =
-                "Could not find package(s) " ++ intercalate ", " (display <$> brokenPkgIds) ++ " in either the sandbox or global DB. As a last resort try cabal installing them explicitly(these specific versions) into the global DB with --global"
-          hPutStrLn stderr errorMsg >> exitFailure
-        till
-        putStrLn "done"
-        putStr "Overwriting broken package DB(s)... "
-        timed $ \till' -> forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> do
-          forM_ (allPackages db) $ \info -> do
-            let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
-            writeFile filename $ I.showInstalledPackageInfo info
-          till'
-        putStrLn "done"
-        putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
+  case mapM (fixPackageIndex globalPackageDBs sandboxRPT) brokenPackageDBs of
+    Left err -> hPutStrLn stderr err >> exitFailure
+    Right brokenPkgIdsFixedPackageDBPairs -> do
+      let (brokenPkgIdss, fixedPackageDBs) = unzip brokenPkgIdsFixedPackageDBPairs
+          brokenPkgIds = Set.toList . Set.fromList $ concat brokenPkgIdss
+      unless (null brokenPkgIds) $ do
+        let errorMsg =
+              "Could not find package(s) " ++ intercalate ", " (display <$> brokenPkgIds) ++ " in either the sandbox or global DB. As a last resort try cabal installing them explicitly(these specific versions) into the global DB with --global"
+        hPutStrLn stderr errorMsg >> exitFailure
+      putStrLn "done"
+      putStr "Overwriting broken package DB(s)... "
+      forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> do
+        forM_ (allPackages db) $ \info -> do
+          let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
+          writeFile filename $ I.showInstalledPackageInfo info
+      putStrLn "done"
+      putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
 
 newtype Pt
   = Pt
