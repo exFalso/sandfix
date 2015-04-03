@@ -1,8 +1,8 @@
 import Control.Applicative ((<$>))
-import Control.Monad (forM, mplus, when, unless, forM_)
+import Control.Monad (forM, mplus, when, unless, forM_, foldM)
 import Data.List (isSuffixOf, isPrefixOf, intercalate)
 import qualified Data.Map as Map
-import Data.Maybe (listToMaybe, catMaybes)
+import Data.Maybe (listToMaybe, catMaybes, isNothing)
 import Data.Either (lefts, rights)
 import Data.Monoid
 import qualified Data.Set as Set
@@ -89,29 +89,50 @@ findDBs sandboxPath pkgDir =
    Nothing -> map (\p -> sandboxPath <> "/" <> p) . filter (isSuffixOf ".conf.d") <$> getDirectoryContents sandboxPath
    Just pkgDir' -> return [sandboxPath <> "/" <> pkgDir']
 
-mainArgs :: [String] -> [String]
-mainArgs = filter (not . isPrefixOf "-")
+data SandFixArgs
+  = SandFixArgs
+    { isVerbose :: Bool
+    , packageDbStack :: PackageDBStack
+    , sandboxPathMaybe :: Maybe FilePath
+    , pkgDirMaybe :: Maybe FilePath
+    }
 
-pkgDbStack :: [String] -> PackageDBStack
-pkgDbStack args = map (parseDb . argValue) (pkgArgs args)
- where
-   argPrefix = "--package-db="
-   argValue = drop (length argPrefix)
-   parseDb "global" = GlobalPackageDB
-   parseDb "user" = UserPackageDB
-   parseDb p = SpecificPackageDB p
-   pkgArgs = filter (isPrefixOf argPrefix)
-
-verbosityArgs :: [String] -> ([String], Bool)
-verbosityArgs args = (filter (not . verboseArg) args, any verboseArg args)
+parseSandFixArgs :: [String] -> Maybe SandFixArgs
+parseSandFixArgs =
+  foldM parseArg'
+    SandFixArgs
+      { isVerbose = False
+      , packageDbStack = []
+      , sandboxPathMaybe = Nothing
+      , pkgDirMaybe = Nothing
+      }
   where
-    verboseArg p = p == "-v" || p == "--verbose"
+    packageDbPrefix = "--package-db="
+    parseArg' sandFixArgs arg
+      | arg `elem` ["-v", "--verbose"] =
+          Just sandFixArgs
+            { isVerbose = True
+            }
+      | packageDbPrefix `isPrefixOf` arg =
+          Just sandFixArgs
+            { packageDbStack = packageDbStack sandFixArgs ++ [parseDb $ drop (length packageDbPrefix) arg]
+            }
+      | isNothing (sandboxPathMaybe sandFixArgs) =
+          Just sandFixArgs
+            { sandboxPathMaybe = Just arg
+            }
+      | isNothing (pkgDirMaybe sandFixArgs) =
+          Just sandFixArgs
+            { pkgDirMaybe = Just arg
+            }
+      | otherwise = Nothing
+    parseDb "global" = GlobalPackageDB
+    parseDb "user" = UserPackageDB
+    parseDb p = SpecificPackageDB p
 
-pkgDbStackWithDefault :: [String] -> PackageDBStack
-pkgDbStackWithDefault args =
-  case pkgDbStack args of
-   [] -> [GlobalPackageDB] -- default
-   pkgs -> pkgs
+pkgDbStackWithDefault :: PackageDBStack -> PackageDBStack
+pkgDbStackWithDefault [] = [GlobalPackageDB]
+pkgDbStackWithDefault pkgs = pkgs
 
 data LogLevel = Normal | Verbose | Error
 
@@ -123,23 +144,20 @@ logMsg v level msg =
    (_, Error) -> hPutStr stderr msg
    _ -> return ()
 
+justOrExit :: Maybe a -> IO a
+justOrExit Nothing = printUsage >> exitFailure
+justOrExit (Just a) = return a
+
 main :: IO ()
 main = do
-  (nonVargs, verboseEnabled) <- verbosityArgs <$> getArgs
-  let logNormal = logMsg verboseEnabled Normal
+  sandFixArgs <- justOrExit . parseSandFixArgs =<< getArgs
+  sandboxPath <- justOrExit $ sandboxPathMaybe sandFixArgs
+  let verboseEnabled = isVerbose sandFixArgs
+      logNormal = logMsg verboseEnabled Normal
       logVerbose = logMsg verboseEnabled Verbose
       logError = logMsg verboseEnabled Error
 
-  argv <- mainArgs <$> getArgs
-  packageDbStack <- pkgDbStackWithDefault <$> getArgs
-
-  when (length nonVargs == 0 || length nonVargs > 3) $ do
-    printUsage
-    exitFailure
-
-  let sandboxPath = head argv
-      pkgDir = if length argv == 2 then Just $ argv !! 1 else Nothing
-  brokenDBPaths <- findDBs sandboxPath pkgDir
+  brokenDBPaths <- findDBs sandboxPath (pkgDirMaybe sandFixArgs)
   when (null brokenDBPaths) $ do
     logError $ "Unable to find sandbox package database in " ++ sandboxPath ++ "\n"
     exitFailure
@@ -150,7 +168,7 @@ main = do
   brokenPackageDBs <- mapM (readPkgDB . SpecificPackageDB) brokenDBPaths
   logVerbose "done\n"
   logVerbose "Reading global Package DB... "
-  globalPackageDBs <- mapM readPkgDB packageDbStack
+  globalPackageDBs <- mapM readPkgDB (pkgDbStackWithDefault $ packageDbStack sandFixArgs)
   logVerbose "done\n"
   logVerbose "Constructing path tree of sandbox... "
   sandboxRPT <- fromDirRecursively sandboxPath
@@ -171,7 +189,7 @@ main = do
         let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
         writeFile filename $ I.showInstalledPackageInfo info
       logVerbose "done\n"
-      logVerbose "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
+      logVerbose "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache\n"
 
 newtype Pt
   = Pt
