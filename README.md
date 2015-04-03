@@ -31,6 +31,8 @@ where `PKGDIR_NAME` is the relative path of the package database under `PATH_SAN
 
 Package database stack can be specified in the same way as for `cabal`. The default is equivalent to `--package-db=global`.
 
+To turn on more verbose output, use `-v` or `--verbose`.
+
 Troubleshooting
 =====
 

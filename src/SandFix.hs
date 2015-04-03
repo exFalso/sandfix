@@ -90,7 +90,7 @@ findDBs sandboxPath pkgDir =
    Just pkgDir' -> return [sandboxPath <> "/" <> pkgDir']
 
 mainArgs :: [String] -> [String]
-mainArgs = filter (not . isPrefixOf "--")
+mainArgs = filter (not . isPrefixOf "-")
 
 pkgDbStack :: [String] -> PackageDBStack
 pkgDbStack args = map (parseDb . argValue) (pkgArgs args)
@@ -102,56 +102,76 @@ pkgDbStack args = map (parseDb . argValue) (pkgArgs args)
    parseDb p = SpecificPackageDB p
    pkgArgs = filter (isPrefixOf argPrefix)
 
+verbosityArgs :: [String] -> ([String], Bool)
+verbosityArgs args = (filter (not . verboseArg) args, any verboseArg args)
+  where
+    verboseArg p = p == "-v" || p == "--verbose"
+
 pkgDbStackWithDefault :: [String] -> PackageDBStack
 pkgDbStackWithDefault args =
   case pkgDbStack args of
    [] -> [GlobalPackageDB] -- default
    pkgs -> pkgs
 
+data LogLevel = Normal | Verbose | Error
+
+logMsg :: Bool -> LogLevel -> String -> IO ()
+logMsg v level msg =
+  case (v, level) of
+   (_, Normal) -> putStr msg
+   (True, Verbose) -> putStr msg
+   (_, Error) -> hPutStr stderr msg
+   _ -> return ()
+
 main :: IO ()
 main = do
+  (nonVargs, verboseEnabled) <- verbosityArgs <$> getArgs
+  let logNormal = logMsg verboseEnabled Normal
+      logVerbose = logMsg verboseEnabled Verbose
+      logError = logMsg verboseEnabled Error
+
   argv <- mainArgs <$> getArgs
   packageDbStack <- pkgDbStackWithDefault <$> getArgs
 
-  when (length argv == 0 || length argv >= 3) $ do
+  when (length nonVargs == 0 || length nonVargs > 3) $ do
     printUsage
     exitFailure
+
   let sandboxPath = head argv
       pkgDir = if length argv == 2 then Just $ argv !! 1 else Nothing
   brokenDBPaths <- findDBs sandboxPath pkgDir
   when (null brokenDBPaths) $ do
-    hPutStrLn stderr $ "Unable to find sandbox package database in " ++ sandboxPath
+    logError $ "Unable to find sandbox package database in " ++ sandboxPath ++ "\n"
     exitFailure
 
   -- print comp
   readPkgDB <- getReadPackageDB
-  putStr "Reading sandbox Package DB... "
+  logVerbose "Reading sandbox Package DB... "
   brokenPackageDBs <- mapM (readPkgDB . SpecificPackageDB) brokenDBPaths
-  putStrLn "done"
-  putStr "Reading global Package DB... "
+  logVerbose "done\n"
+  logVerbose "Reading global Package DB... "
   globalPackageDBs <- mapM readPkgDB packageDbStack
-  putStrLn "done"
-  putStr "Constructing path tree of sandbox... "
+  logVerbose "done\n"
+  logVerbose "Constructing path tree of sandbox... "
   sandboxRPT <- fromDirRecursively sandboxPath
-  putStrLn "done"
-  putStr "Fixing sandbox package DB... "
+  logVerbose "done\n"
+  logNormal "Fixing sandbox package DB... "
   case mapM (fixPackageIndex globalPackageDBs sandboxRPT) brokenPackageDBs of
-    Left err -> hPutStrLn stderr err >> exitFailure
+    Left err -> logError err >> exitFailure
     Right brokenPkgIdsFixedPackageDBPairs -> do
       let (brokenPkgIdss, fixedPackageDBs) = unzip brokenPkgIdsFixedPackageDBPairs
           brokenPkgIds = Set.toList . Set.fromList $ concat brokenPkgIdss
       unless (null brokenPkgIds) $ do
         let errorMsg =
               "Could not find package(s) " ++ intercalate ", " (display <$> brokenPkgIds) ++ " in either the sandbox or global DB. As a last resort try cabal installing them explicitly(these specific versions) into the global DB with --global"
-        hPutStrLn stderr errorMsg >> exitFailure
-      putStrLn "done"
-      putStr "Overwriting broken package DB(s)... "
-      forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> do
-        forM_ (allPackages db) $ \info -> do
-          let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
-          writeFile filename $ I.showInstalledPackageInfo info
-      putStrLn "done"
-      putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
+        logError errorMsg >> exitFailure
+      logNormal "done\n"
+      logVerbose "Overwriting broken package DB(s)... "
+      forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> forM_ (allPackages db) $ \info -> do
+        let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
+        writeFile filename $ I.showInstalledPackageInfo info
+      logVerbose "done\n"
+      logVerbose "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"
 
 newtype Pt
   = Pt
