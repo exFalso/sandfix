@@ -42,12 +42,12 @@ fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
   = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
   where
     allKnownPackages :: Map.Map String I.InstalledPackageInfo
-    allKnownPackages = Map.fromList $ map (\pkg -> (I.compatPackageKey pkg, pkg)) $ concatMap allPackages $ (brokenPackageIndex : globalPkgIndices)
+    allKnownPackages = Map.fromList $ map (\pkg -> (show $ disp $ I.sourcePackageId pkg, pkg)) $ concatMap allPackages $ (brokenPackageIndex : globalPkgIndices)
 
     packageIdFromInstalledPackageId (SimpleUnitId (ComponentId str)) =
-      case Map.lookup str allKnownPackages of
-        Just pkg -> Right $ I.sourcePackageId pkg
-        Nothing -> Left $ "Could not find package in brokenPackageIndex: " ++ str
+      case find (\(k, v) -> isPrefixOf k str) (Map.toList allKnownPackages) of
+        Just (_, pkg) -> Right $ I.sourcePackageId pkg
+        Nothing -> Left $ "Could not find package: " ++ str ++ "Keys:" ++ intercalate " " (Map.keys allKnownPackages)
 
     fromPackageIdsPackageInfoPairs = \(brokenPkgIds, infos) -> (concat brokenPkgIds, fromList infos)
 
