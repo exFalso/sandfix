@@ -34,7 +34,7 @@ getReadPackageDB = do
 
 type Fix = Either String
 
-packageIdFromInstalledPackageId (InstalledPackageId str) = case simpleParse $ take (length str - 33) str of
+packageIdFromInstalledPackageId (SimpleUnitId (ComponentId str)) = case simpleParse $ take (length str - 33) str of
   Nothing -> Left $ "Failed to parse installed package id " ++ str
   Just pid -> return pid
 
@@ -48,10 +48,10 @@ fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
       -- 1. Fix dependencies
       dependencies <- forM (I.depends info) $ \ipkgid -> do
         pkgid <- packageIdFromInstalledPackageId ipkgid
-        case lookupInstalledPackageId brokenPackageIndex ipkgid `mplus`
+        case lookupUnitId brokenPackageIndex ipkgid `mplus`
              (listToMaybe $ concatMap ((flip lookupSourcePackageId) pkgid) globalPkgIndices)
           of
-          Just fInfo -> return . Right $ I.installedPackageId fInfo
+          Just fInfo -> return . Right $ I.installedUnitId fInfo
           Nothing -> return . Left $ pkgid
 
       let fixedDependencies = rights dependencies
@@ -148,7 +148,7 @@ main = do
       putStrLn "done"
       putStr "Overwriting broken package DB(s)... "
       forM_ (zip brokenDBPaths fixedPackageDBs) $ \(path, db) -> forM_ (allPackages db) $ \info -> do
-        let filename = path <> "/" <> display (I.installedPackageId info) <> ".conf"
+        let filename = path <> "/" <> display (I.installedUnitId info) <> ".conf"
         writeFile filename $ I.showInstalledPackageInfo info
       putStrLn "done"
       putStrLn "Please run 'cabal sandbox hc-pkg recache' in the sandbox to update the package cache"

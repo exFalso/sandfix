@@ -21,7 +21,7 @@ executable sandfix
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base < 5
-                     , Cabal >=1.18 && < 1.23
+                     , Cabal >= 1.24
                      , containers == 0.5.*
                      , directory == 1.2.*
   hs-source-dirs:      src/
