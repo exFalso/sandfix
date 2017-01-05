@@ -34,9 +34,7 @@ getReadPackageDB = do
 
 type Fix = Either String
 
-packageIdFromInstalledPackageId (SimpleUnitId (ComponentId str)) = case simpleParse $ take (length str - 33) str of
-  Nothing -> Left $ "Failed to parse installed package id " ++ str
-  Just pid -> return pid
+packageIdFromInstalledPackageId (SimpleUnitId (ComponentId pid)) = pid
 
 fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
   = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
