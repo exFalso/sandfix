@@ -34,9 +34,10 @@ getReadPackageDB = do
 
 type Fix = Either String
 
-packageIdFromInstalledPackageId (SimpleUnitId (ComponentId pid)) = case simpleParse pid of
-  Nothing -> Left $ "Failed to parse installed package id " ++ pid
-  Just pid -> return pid
+packageIdFromInstalledPackageId (SimpleUnitId (ComponentId str)) =
+  case simpleParse $ take (length str - 21) str of
+    Nothing -> Left $ "Failed to parse installed package id " ++ str
+    Just pid -> return pid
 
 fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
   = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
@@ -48,6 +49,7 @@ fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
       -- 1. Fix dependencies
       dependencies <- forM (I.depends info) $ \ipkgid -> do
         pkgid <- packageIdFromInstalledPackageId ipkgid
+
         case lookupUnitId brokenPackageIndex ipkgid `mplus`
              (listToMaybe $ concatMap ((flip lookupSourcePackageId) pkgid) globalPkgIndices)
           of
