@@ -1,23 +1,26 @@
-import Control.Applicative ((<$>))
-import Control.Monad (filterM, forM, mplus, when, unless, forM_)
-import Data.List (isSuffixOf, isPrefixOf, intercalate)
-import qualified Data.Map as Map
-import Data.Maybe (isNothing, listToMaybe, maybeToList)
-import Data.Either (lefts, rights)
-import Data.Monoid
-import qualified Data.Set as Set
+import           Control.Applicative               ((<$>))
+import           Control.Monad                     (filterM, forM, forM_, mplus,
+                                                    unless, when)
+import           Data.Either                       (lefts, rights)
+import           Data.List                         (intercalate, isPrefixOf,
+                                                    isSuffixOf, find)
+import qualified Data.Map                          as Map
+import           Data.Maybe                        (isNothing, listToMaybe,
+                                                    maybeToList)
+import           Data.Monoid
+import qualified Data.Set                          as Set
 import qualified Distribution.InstalledPackageInfo as I
-import Distribution.Package
-import Distribution.Simple.Compiler
-import Distribution.Simple.GHC
-import Distribution.Simple.PackageIndex
-import Distribution.Simple.Program
-import Distribution.Text
-import Distribution.Verbosity
-import System.Directory
-import System.Environment
-import System.Exit
-import System.IO
+import           Distribution.Package
+import           Distribution.Simple.Compiler
+import           Distribution.Simple.GHC
+import           Distribution.Simple.PackageIndex
+import           Distribution.Simple.Program
+import           Distribution.Text
+import           Distribution.Verbosity
+import           System.Directory
+import           System.Environment
+import           System.Exit
+import           System.IO
 
 _VERBOSITY :: Verbosity
 _VERBOSITY = normal
@@ -34,14 +37,18 @@ getReadPackageDB = do
 
 type Fix = Either String
 
-packageIdFromInstalledPackageId (SimpleUnitId (ComponentId str)) =
-  case simpleParse $ take (length str - 21) str of
-    Nothing -> Left $ "Failed to parse installed package id " ++ str
-    Just pid -> return pid
-
+fixPackageIndex :: [InstalledPackageIndex] -> RPT -> InstalledPackageIndex -> Either String ([PackageId], PackageIndex I.InstalledPackageInfo)
 fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
   = fromPackageIdsPackageInfoPairs . unzip <$> mapM fixInstalledPackage (allPackages brokenPackageIndex)
   where
+    allKnownPackages :: Map.Map String I.InstalledPackageInfo
+    allKnownPackages = Map.fromList $ map (\pkg -> (I.compatPackageKey pkg, pkg)) $ concatMap allPackages $ (brokenPackageIndex : globalPkgIndices)
+
+    packageIdFromInstalledPackageId (SimpleUnitId (ComponentId str)) =
+      case Map.lookup str allKnownPackages of
+        Just pkg -> Right $ I.sourcePackageId pkg
+        Nothing -> Left $ "Could not find package in brokenPackageIndex: " ++ str
+
     fromPackageIdsPackageInfoPairs = \(brokenPkgIds, infos) -> (concat brokenPkgIds, fromList infos)
 
     fixInstalledPackage info
@@ -54,19 +61,19 @@ fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
              (listToMaybe $ concatMap ((flip lookupSourcePackageId) pkgid) globalPkgIndices)
           of
           Just fInfo -> return . Right $ I.installedUnitId fInfo
-          Nothing -> return . Left $ pkgid
+          Nothing    -> return . Left $ pkgid
 
       let fixedDependencies = rights dependencies
           brokenDependencies = lefts dependencies
 
       -- 2. Fix the global paths
-      let 
+      let
         findOneOrFail path = case findPartialPathMatches path sandboxRPT of
           [] -> Left $ "Could not find sandbox path of " ++ path
           [a] -> return a
           ps -> Left $ "Multiple possible sandbox paths of " ++ path ++ ": " ++ show ps
         findFirstOrRoot path = case findPartialPathMatches path sandboxRPT of
-          [] -> "/"
+          []      -> "/"
           (a : _) -> a
       fixedImportDirs <- mapM findOneOrFail $ I.importDirs info
       fixedLibDirs <- mapM findOneOrFail $ I.libraryDirs info
@@ -101,14 +108,14 @@ pkgDbStack args = map (parseDb . argValue) (pkgArgs args)
    argPrefix = "--package-db="
    argValue = drop (length argPrefix)
    parseDb "global" = GlobalPackageDB
-   parseDb "user" = UserPackageDB
-   parseDb p = SpecificPackageDB p
+   parseDb "user"   = UserPackageDB
+   parseDb p        = SpecificPackageDB p
    pkgArgs = filter (isPrefixOf argPrefix)
 
 pkgDbStackWithDefault :: [String] -> PackageDBStack
 pkgDbStackWithDefault args =
   case pkgDbStack args of
-   [] -> [GlobalPackageDB] -- default
+   []   -> [GlobalPackageDB] -- default
    pkgs -> pkgs
 
 main :: IO ()
@@ -158,7 +165,7 @@ main = do
 -- Reverse Path Tree
 data RPT
   = RPT
-    { rptPath :: Maybe FilePath
+    { rptPath     :: Maybe FilePath
     , rptChildren :: Map.Map String RPT
     }
   deriving Show
@@ -188,9 +195,9 @@ fromDirRecursively = fromDirRecursively' Set.empty
     fromDirRecursively'' visited path
       | path `Set.member` visited = return mempty
       | otherwise = do
-        let isSub "." = False
+        let isSub "."  = False
             isSub ".." = False
-            isSub _ = True
+            isSub _    = True
         allSubs <- map (\p -> path <> "/" <> p) . filter isSub <$> getDirectoryContents path
         subDirs <- filterM doesDirectoryExist allSubs
         subRPT <- mconcat <$> mapM (fromDirRecursively' $ Set.insert path visited) subDirs
@@ -202,7 +209,7 @@ reverseSplitFilePath filepath = reverseSplitFilePath' filepath []
     reverseSplitFilePath' "" ps = ps
     reverseSplitFilePath' path ps = case span (/= '/') path of
       ("", '/' : rest) -> reverseSplitFilePath' rest ps
-      (p, rest) -> reverseSplitFilePath' rest (p : ps)
+      (p, rest)        -> reverseSplitFilePath' rest (p : ps)
 
 findPartialPathMatches :: FilePath -> RPT -> [FilePath]
 findPartialPathMatches filepath r
