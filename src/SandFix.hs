@@ -3,10 +3,10 @@ import           Control.Monad                     (filterM, forM, forM_, mplus,
                                                     unless, when)
 import           Data.Either                       (lefts, rights)
 import           Data.List                         (intercalate, isPrefixOf,
-                                                    isSuffixOf, find)
+                                                    isSuffixOf, find, findIndex, findIndex)
 import qualified Data.Map                          as Map
 import           Data.Maybe                        (isNothing, listToMaybe,
-                                                    maybeToList)
+                                                    maybeToList, fromJust)
 import           Data.Monoid
 import qualified Data.Set                          as Set
 import qualified Distribution.InstalledPackageInfo as I
@@ -77,9 +77,8 @@ fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
           (a : _) -> a
       fixedImportDirs <- mapM findOneOrFail $ I.importDirs info
       fixedLibDirs <- mapM findOneOrFail $ I.libraryDirs info
-      fixedLibDynDirs <- mapM findOneOrFail $ I.libraryDynDirs info
+      fixedLibDynDirs <- mapM parent fixedLibDirs
       fixedIncludeDirs <- mapM findOneOrFail $ I.includeDirs info
-      fixedDataDir <- findOneOrFail $ I.dataDir info
       let fixedFrameworkDirs = findFirstOrRoot <$> I.frameworkDirs info
           fixedHaddockIfaces = findFirstOrRoot <$> I.haddockInterfaces info
           fixedHaddockHTMLs =  findFirstOrRoot <$> I.haddockHTMLs info
@@ -94,8 +93,12 @@ fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
            , I.frameworkDirs = fixedFrameworkDirs
            , I.haddockInterfaces = fixedHaddockIfaces
            , I.haddockHTMLs = fixedHaddockHTMLs
-           , I.dataDir = fixedDataDir
            })
+
+parent :: FilePath -> Either String FilePath
+parent filePath = do
+  lastSlashIdx <- maybe (Left $ "Cannot find parent of " ++ filePath) (\idx -> Right $ (length filePath) - 1 - idx) (findIndex (== '/') (reverse filePath))
+  return $ take lastSlashIdx filePath
 
 findDBs :: FilePath -> Maybe String -> IO [FilePath]
 findDBs sandboxPath pkgDir =
