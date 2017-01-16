@@ -88,7 +88,7 @@ fixPackageIndex globalPkgIndices sandboxRPT brokenPackageIndex
            { I.depends = fixedDependencies
            , I.importDirs = fixedImportDirs
            , I.libraryDirs = fixedLibDirs
-           , I.libraryDynDirs = fixedLibDynDirs
+--           , I.libraryDynDirs = fixedLibDynDirs
            , I.includeDirs = fixedIncludeDirs
            , I.frameworkDirs = fixedFrameworkDirs
            , I.haddockInterfaces = fixedHaddockIfaces
